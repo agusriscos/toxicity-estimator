@@ -69,6 +69,7 @@ def tokenize_ruddit(df):
     out["clean_text"] = out["clean_text"].apply(
         lambda x: " ".join([w for w in str(x).split()])
     )
+    out = out.loc[out["clean_text"] != ""].reset_index(drop=True) # eliminar nulos tras el procesado
     return out
 
 
