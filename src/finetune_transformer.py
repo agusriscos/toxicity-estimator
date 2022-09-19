@@ -1,12 +1,14 @@
-
 from os.path import join
 import pandas as pd
 
-from sklearn.metrics import precision_recall_fscore_support, accuracy_score
+from sklearn.metrics import mean_squared_error
 
 import torch
 from torch.utils.data import Dataset
+import torch.nn as nn
+
 import transformers
+
 transformers.logging.set_verbosity_error()
 
 
@@ -24,24 +26,36 @@ class CustomDataset(Dataset):
         return len(self.labels)
 
 
-def compute_metrics(pred):
-    labels = pred.label_ids
-    preds = pred.predictions.argmax(-1)
-    precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average='binary')
-    accuracy = accuracy_score(labels, preds)
-    return {
-        'accuracy': accuracy,
-        'f1': f1,
-        'precision': precision,
-        'recall': recall
-    }
+class PosModel(nn.Module):
+    def __init__(self):
+        super(PosModel, self).__init__()
+
+        self.base_model = transformers.AutoModelForSequenceClassification.from_pretrained(
+            "distilbert-base-uncased"
+        )
+        self.dropout = nn.Dropout(0.5)
+        self.linear = nn.Linear(768, 1)  # output features from bert is 768 and 2 is ur number of labels
+
+    def forward(self, input_ids, attn_mask):
+        outputs = self.base_model(input_ids, attention_mask=attn_mask)
+        # You write you new head here
+        outputs = self.dropout(outputs[0])
+        outputs = self.linear(outputs)
+
+        return outputs
 
 
-def get_hugging_datasets(train, val, model_name="dccuchile/bert-base-spanish-wwm-cased"):
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    r_mse = mean_squared_error(labels, predictions, squared=False)
+    return {"r_mse": r_mse}
+
+
+def get_hugging_datasets(train, val, model_name="distilbert-base-uncased"):
     train_texts = train["text"].values.tolist()
-    train_labels = train["claim"].values.tolist()
+    train_labels = train["score"].values.tolist()
     val_texts = val["text"].values.tolist()
-    val_labels = val["claim"].values.tolist()
+    val_labels = val["score"].values.tolist()
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
     train_encodings = tokenizer(train_texts, truncation=True, padding=True)
@@ -54,15 +68,20 @@ def get_hugging_datasets(train, val, model_name="dccuchile/bert-base-spanish-wwm
 
 
 def main():
-    data_dirpath = "/home/agusriscos/verifiable-phrase-detection/data"
-    training_dirpath = "/home/agusriscos/verifiable-phrase-detection/training/bert"
-    train_df = pd.read_csv(join(data_dirpath, "prep_train.csv"))
-    val_df = pd.read_csv(join(data_dirpath, "raw_val.csv"))
+    data_dirpath = "/home/agusriscos/toxicity-estimator/data/prep"
+    training_dirpath = "/home/agusriscos/toxicity-estimator/training/bert"
+    train_df = pd.read_csv(join(data_dirpath, "train_ruddit.csv"))
+    val_df = pd.read_csv(join(data_dirpath, "test_ruddit.csv"))
 
-    train_dataset, val_dataset = get_hugging_datasets(train_df, val_df, "dccuchile/bert-base-spanish-wwm-cased")
+    train_dataset, val_dataset = get_hugging_datasets(train_df, val_df,
+                                                      "distilbert-base-uncased")
 
-    model = transformers.AutoModelForSequenceClassification.from_pretrained("dccuchile/bert-base-spanish-wwm-cased",
-                                                                            num_labels=2)
+    model = transformers.AutoModelForSequenceClassification.from_pretrained(
+        "distilbert-base-uncased",
+        num_labels=1,
+        problem_type="regression",
+        ignore_mismatched_sizes=True
+    )
     training_args = transformers.TrainingArguments(output_dir=training_dirpath,
                                                    overwrite_output_dir=True, num_train_epochs=4, logging_steps=100,
                                                    evaluation_strategy="steps", eval_steps=100, learning_rate=2e-5,
